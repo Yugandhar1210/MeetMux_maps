@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet"; // add useMap
 import L from "leaflet";
 import useSocket from "../hooks/useSocket";
-import { authApi, usersApi, connectionsApi } from "../utils/api";
+import { eventsApi, authApi, usersApi, connectionsApi } from "../utils/api";
 import "leaflet/dist/leaflet.css";
+import BottomSheet from "../components/BottomSheet";
 
 // Simple avatar-like DivIcon (uses first letter)
 function avatarIcon(label = "U", color = "#2563eb") {
@@ -72,6 +73,29 @@ export default function MapView() {
   const [meId, setMeId] = useState(null);
   const [map, setMap] = useState(null); // NEW: hold map instance
   const [selfPos, setSelfPos] = useState(null);
+  const [mode, setMode] = useState("people");
+  const [peopleFilters, setPeopleFilters] = useState({
+    activity: "", // interest type
+    show: "all", // all | online | connections
+    heatmap: false,
+  });
+  const [events, setEvents] = useState([]);
+  const [filters, setFilters] = useState({
+    type: "",
+    createdBy: "all",
+    timeOfDay: "",
+    dateRange: "",
+    heatmap: false,
+  });
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState({
+    name: "",
+    activityType: "",
+    startsAt: "",
+    endsAt: "",
+    lat: "",
+    lng: "",
+  });
 
   const socket = useSocket();
   const [heatmap, setHeatmap] = useState(false);
@@ -139,6 +163,7 @@ export default function MapView() {
     return () => socket.off("location-update", onLoc);
   }, [socket]);
 
+  // compute filtered users per peopleFilters
   const filteredUsers = useMemo(() => {
     let list = users
       .map((u) => {
@@ -148,16 +173,20 @@ export default function MapView() {
       })
       .filter((u) => Number.isFinite(u.lat) && Number.isFinite(u.lng));
 
-    if (activity)
+    if (peopleFilters.activity) {
       list = list.filter(
-        (u) => Array.isArray(u.interests) && u.interests.includes(activity)
+        (u) =>
+          Array.isArray(u.interests) &&
+          u.interests.includes(peopleFilters.activity)
       );
-    if (filter === "live")
+    }
+    if (peopleFilters.show === "online") {
       list = list.filter((u) => u.isOnline || u.status === "online");
-    else if (filter === "connections")
+    } else if (peopleFilters.show === "connections") {
       list = list.filter((u) => connectionIds.has(u._id));
+    }
     return list;
-  }, [users, filter, activity, connectionIds]);
+  }, [users, peopleFilters, connectionIds]);
 
   const meLat = Number(me?.location?.lat);
   const meLng = Number(me?.location?.lng);
@@ -204,77 +233,103 @@ export default function MapView() {
     );
   };
 
+  // fetch events when filters change (in events mode)
+  useEffect(() => {
+    (async () => {
+      if (mode !== "events") return;
+      try {
+        const lat = Number(me?.location?.lat) || 17.6868;
+        const lng = Number(me?.location?.lng) || 83.2185;
+        const params = {
+          type: filters.type || undefined,
+          createdBy: filters.createdBy,
+          timeOfDay: filters.timeOfDay || undefined,
+          dateRange: filters.dateRange || undefined,
+          lat,
+          lng,
+          radius: 5000,
+        };
+        const res = await eventsApi.list(params);
+        setEvents(Array.isArray(res.data) ? res.data : []);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, [mode, filters, me]);
+
+  // create event
+  const onCreateEvent = async () => {
+    try {
+      const body = {
+        name: draft.name,
+        activityType: draft.activityType,
+        description: "",
+        startsAt: draft.startsAt,
+        endsAt: draft.endsAt,
+        location: {
+          lat: Number(draft.lat || me?.location?.lat),
+          lng: Number(draft.lng || me?.location?.lng),
+        },
+      };
+      await eventsApi.create(body);
+      setCreating(false);
+      setDraft({
+        name: "",
+        activityType: "",
+        startsAt: "",
+        endsAt: "",
+        lat: "",
+        lng: "",
+      });
+      // refresh list
+      const res = await eventsApi.list({
+        lat: me?.location?.lat,
+        lng: me?.location?.lng,
+        radius: 5000,
+        createdBy: filters.createdBy,
+      });
+      setEvents(res.data || []);
+    } catch (e) {
+      alert(e?.response?.data?.message || "Failed to create activity");
+    }
+  };
+
+  // marker palette
+  const colorForPerson = (id) => {
+    if (!id) return "#2563eb";
+    if (id === meId) return "#ff0000ff"; // me: red
+    return connectionIds.has(id) ? "#16a34a" : "#2563eb"; // connections green, others blue
+  };
+
+  // events legend + map render
   return (
     <div className="relative h-[calc(100vh-56px)] w-full">
-      {needsAuth && (
-        <div className="absolute z-[1100] inset-0 bg-white/80 backdrop-blur flex items-center justify-center">
-          <div className="bg-white rounded shadow p-4 text-center">
-            <div className="mb-2 font-medium">
-              Please log in to view people on the map.
-            </div>
-            <div className="space-x-2">
-              <a href="/login" className="px-3 py-2 border rounded">
-                Login
-              </a>
-              <a href="/register" className="px-3 py-2 border rounded">
-                Sign Up
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
       {/* legend */}
-      <div className="absolute z-[1000] top-4 left-4 bg-white rounded shadow px-3 py-2 space-x-2 flex items-center">
-        <select
-          className="border rounded px-2 py-1"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        >
-          <option value="all">All</option>
-          <option value="live">Live</option>
-          <option value="connections">Connections</option>
-        </select>
-        <select
-          className="border rounded px-2 py-1"
-          value={activity}
-          onChange={(e) => setActivity(e.target.value)}
-        >
-          <option value="">Any activity</option>
-          <option>Sports</option>
-          <option>Tech</option>
-          <option>Food</option>
-          <option>Travel</option>
-          <option>Music</option>
-        </select>
-        <button
-          className="px-2 py-1 border rounded"
-          onClick={() => setHeatmap((h) => !h)}
-        >
-          {heatmap ? "Markers" : "Heatmap"}
-        </button>
-        <a className="px-2 py-1 border rounded" href="/profile">
-          Profile
-        </a>
-        <a className="px-2 py-1 border rounded" href="/">
-          Home
-        </a>
-        <div className="ml-2 text-xs text-gray-600 flex items-center gap-3">
-          <span
-            className="inline-block w-3 h-3 rounded-full"
-            style={{ background: "#ff0000ff" }}
-          ></span>{" "}
-          You
-          <span
-            className="inline-block w-3 h-3 rounded-full"
-            style={{ background: "#16a34a" }}
-          ></span>{" "}
-          Connections
-          <span
-            className="inline-block w-3 h-3 rounded-full"
-            style={{ background: "#2563eb" }}
-          ></span>{" "}
-          Others
-        </div>
+      <div className="absolute z-[1000] top-4 left-4 bg-white rounded shadow px-3 py-2 space-x-3 flex items-center">
+        <span
+          className="inline-block w-3 h-3 rounded-full"
+          style={{ background: "#ff0000ff" }}
+        ></span>
+        <span className="text-xs">You</span>
+        <span
+          className="inline-block w-3 h-3 rounded-full"
+          style={{ background: "#16a34a" }}
+        ></span>
+        <span className="text-xs">Connections</span>
+        <span
+          className="inline-block w-3 h-3 rounded-full"
+          style={{ background: "#2563eb" }}
+        ></span>
+        <span className="text-xs">Others</span>
+        {mode === "events" && (
+          <>
+            <span
+              className="inline-block w-3 h-3 rounded-full"
+              style={{ background: "#f59e0b" }}
+            ></span>
+            <span className="text-xs">Events</span>
+          </>
+        )}
       </div>
 
       {/* NEW: bottom-right locate button */}
@@ -315,14 +370,19 @@ export default function MapView() {
           </Marker>
         )}
 
-        {/* existing users markers (blue) */}
-        {!heatmap &&
+        {/* people markers or heatmap */}
+        {mode === "people" &&
+          !peopleFilters.heatmap &&
           filteredUsers
-            .filter((u) => (u._id || u.userId) !== meId) // avoid dup with self
+            .filter((u) => (u._id || u.userId) !== meId)
             .map((u) => {
               const id = u._id || u.userId;
-              const isConn = connectionIds.has(id);
-              const color = isConn ? "#16a34a" : "#2563eb";
+              const color =
+                id === meId
+                  ? "#ff0000ff"
+                  : connectionIds.has(id)
+                  ? "#16a34a"
+                  : "#2563eb";
               const label = String((u.name || "U")[0]).toUpperCase();
               return (
                 <Marker
@@ -331,34 +391,108 @@ export default function MapView() {
                   icon={avatarIcon(label, color)}
                 >
                   <Popup>
-                    <div className="space-y-1">
-                      <div className="font-medium">
-                        {u.name || id}{" "}
-                        {isConn && (
-                          <span className="text-xs text-green-600">
-                            • Connection
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {(u.interests || []).join(", ")}
-                      </div>
-                      {!isConn && (
-                        <button
-                          className="mt-1 px-2 py-1 text-sm bg-blue-600 text-white rounded"
-                          onClick={() => sendConnect(id)}
-                        >
-                          Connect
-                        </button>
+                    <div className="font-medium">
+                      {u.name}{" "}
+                      {connectionIds.has(id) && (
+                        <span className="text-xs text-green-600">
+                          • Connection
+                        </span>
                       )}
                     </div>
+                    <div className="text-xs text-gray-500">
+                      {(u.interests || []).join(", ")}
+                    </div>
+                    {!connectionIds.has(id) && id !== meId && (
+                      <button
+                        className="mt-1 px-2 py-1 text-sm bg-blue-600 text-white rounded"
+                        onClick={() => sendConnect(id)}
+                      >
+                        Connect
+                      </button>
+                    )}
                   </Popup>
                 </Marker>
               );
             })}
+        {mode === "people" && peopleFilters.heatmap && (
+          <HeatmapLayer
+            points={filteredUsers
+              .map((u) => [u.lat, u.lng, 0.6])
+              .filter((p) => p.every(Number.isFinite))}
+          />
+        )}
 
-        {heatmap && <HeatmapLayer points={heatPoints} />}
+        {/* events mode markers or heatmap */}
+        {mode === "events" &&
+          !filters.heatmap &&
+          events.map((ev) => {
+            const lat = Number(ev.location?.lat);
+            const lng = Number(ev.location?.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            return (
+              <Marker
+                key={ev._id}
+                position={[lat, lng]}
+                icon={avatarIcon("E", "#f59e0b")}
+              >
+                <Popup>
+                  <div className="font-medium">{ev.name}</div>
+                  <div className="text-xs text-gray-600">{ev.activityType}</div>
+                  <div className="text-xs text-gray-500">
+                    {new Date(ev.startsAt).toLocaleString()}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    By {ev.creator?.name || "Someone"} ·{" "}
+                    {ev.participants?.length || 0}/{ev.capacity}
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      className="px-2 py-1 text-sm bg-blue-600 text-white rounded"
+                      onClick={async () => {
+                        try {
+                          await eventsApi.join(ev._id);
+                          alert("Joined");
+                        } catch (e) {
+                          alert(e?.response?.data?.message || "Join failed");
+                        }
+                      }}
+                    >
+                      Join
+                    </button>
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
+        {mode === "events" && filters.heatmap && (
+          <HeatmapLayer
+            points={events
+              .map((ev) => [
+                Number(ev.location?.lat),
+                Number(ev.location?.lng),
+                0.9,
+              ])
+              .filter((p) => p.every(Number.isFinite))}
+          />
+        )}
+
+        {/* ...existing heatmap for people if applicable... */}
       </MapContainer>
+
+      {/* Bottom sheet with mode switch, filters, create */}
+      <BottomSheet
+        mode={mode}
+        setMode={setMode}
+        filters={filters}
+        setFilters={setFilters}
+        peopleFilters={peopleFilters}
+        setPeopleFilters={setPeopleFilters}
+        creating={creating}
+        setCreating={setCreating}
+        draft={draft}
+        setDraft={setDraft}
+        onCreateEvent={onCreateEvent}
+      />
     </div>
   );
 }

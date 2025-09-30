@@ -1,190 +1,239 @@
 import Event from "../models/Event.js";
-import User from "../models/User.js";
+import Connection from "../models/Connection.js";
+
+function dateRange(range) {
+  const now = new Date();
+  const start = new Date();
+  const end = new Date();
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+
+  if (range === "today") return { $gte: start, $lte: end };
+
+  if (range === "tomorrow") {
+    const s = new Date(start);
+    s.setDate(s.getDate() + 1);
+    const e = new Date(end);
+    e.setDate(e.getDate() + 1);
+    return { $gte: s, $lte: e };
+  }
+
+  if (range === "weekend") {
+    // upcoming Saturday/Sunday
+    const day = now.getDay(); // 0 Sun..6 Sat
+    const sat = new Date(start);
+    const sun = new Date(end);
+    const toSat = (6 - day + 7) % 7;
+    const toSun = (7 - day + 7) % 7;
+    sat.setDate(sat.getDate() + toSat);
+    sun.setDate(sun.getDate() + toSun);
+    return { $gte: sat, $lte: sun };
+  }
+
+  if (range === "nextweek") {
+    // next Mon-Sun after current week
+    const day = now.getDay();
+    const nextMon = new Date(start);
+    nextMon.setDate(nextMon.getDate() + ((8 - day) % 7 || 7));
+    const nextSun = new Date(nextMon);
+    nextSun.setDate(nextSun.getDate() + 6);
+    nextSun.setHours(23, 59, 59, 999);
+    return { $gte: nextMon, $lte: nextSun };
+  }
+
+  return null;
+}
+
+function timeOfDayRange(tod) {
+  // local hours
+  const mk = (h) => ({
+    $expr: {
+      $and: [
+        { $gte: [{ $hour: "$startsAt" }, h.start] },
+        { $lt: [{ $hour: "$startsAt" }, h.end] },
+      ],
+    },
+  });
+  if (tod === "morning") return mk({ start: 5, end: 12 });
+  if (tod === "afternoon") return mk({ start: 12, end: 17 });
+  if (tod === "evening") return mk({ start: 17, end: 21 });
+  if (tod === "night") return mk({ start: 21, end: 24 }); // note: 0-5 not included
+  return null;
+}
+
+export const listEvents = async (req, res) => {
+  try {
+    const {
+      type, // activityType
+      createdBy, // "connections" | "all"
+      timeOfDay, // morning | afternoon | evening | night
+      dateRange: dr, // today | tomorrow | weekend | nextweek
+      lat,
+      lng,
+      radius, // optional near filter (meters)
+    } = req.query;
+
+    const q = { visibility: "public" };
+    if (type) q.activityType = type;
+
+    // date range
+    const drf = dateRange(dr);
+    if (drf) q.startsAt = drf;
+
+    // geo near pipeline if coords provided
+    const pipeline = [];
+    if (lat && lng && radius) {
+      pipeline.push({
+        $geoNear: {
+          near: { type: "Point", coordinates: [Number(lng), Number(lat)] },
+          distanceField: "dist",
+          spherical: true,
+          key: "locationGeo",
+          maxDistance: Number(radius),
+        },
+      });
+    } else {
+      pipeline.push({ $match: {} });
+    }
+
+    pipeline.push({ $match: q });
+
+    // time of day (aggregation expr)
+    const todExpr = timeOfDayRange(timeOfDay);
+    if (todExpr) pipeline.push({ $match: todExpr });
+
+    // createdBy=connections
+    if (createdBy === "connections" && req.user?.id) {
+      const me = String(req.user.id);
+      const cons = await Connection.find({
+        status: "accepted",
+        $or: [{ requester: me }, { receiver: me }],
+      })
+        .select("requester receiver")
+        .lean();
+      const ids = new Set(
+        cons.map((c) =>
+          String(c.requester) === me ? String(c.receiver) : String(c.requester)
+        )
+      );
+      pipeline.push({ $match: { createdBy: { $in: Array.from(ids) } } });
+    }
+
+    pipeline.push(
+      { $sort: { startsAt: 1 } },
+      { $limit: 200 },
+      {
+        $lookup: {
+          from: "users",
+          localField: "createdBy",
+          foreignField: "_id",
+          as: "creator",
+        },
+      },
+      { $unwind: { path: "$creator", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          name: 1,
+          description: 1,
+          activityType: 1,
+          location: 1,
+          startsAt: 1,
+          endsAt: 1,
+          createdBy: 1,
+          participants: 1,
+          capacity: 1,
+          creator: {
+            _id: "$creator._id",
+            name: "$creator.name",
+            email: "$creator.email",
+          },
+        },
+      }
+    );
+
+    const events = await Event.aggregate(pipeline);
+    res.json(events);
+  } catch (e) {
+    res.status(500).json({ message: e.message || "Failed to load events" });
+  }
+};
 
 export const createEvent = async (req, res) => {
   try {
-    const data = { ...req.body, createdBy: req.user._id };
-    const event = await Event.create(data);
-    return res.status(201).json(event);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-export const getEvents = async (req, res) => {
-  try {
-    const { type, dateFrom, dateTo } = req.query;
-    const filter = {};
-    if (type) filter.type = type;
-    if (dateFrom || dateTo) {
-      filter.date = {};
-      if (dateFrom) filter.date.$gte = new Date(dateFrom);
-      if (dateTo) filter.date.$lte = new Date(dateTo);
+    const {
+      name,
+      description,
+      activityType,
+      location,
+      startsAt,
+      endsAt,
+      capacity,
+    } = req.body;
+    if (!name || !activityType || !startsAt || !endsAt) {
+      return res.status(400).json({ message: "Missing fields" });
     }
-    const events = await Event.find(filter).populate(
-      "createdBy",
-      "name avatarUrl"
-    );
-    return res.json(events);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-export const getEventById = async (req, res) => {
-  try {
-    const event = await Event.findById(req.params.id)
-      .populate("createdBy", "name avatarUrl")
-      .populate("participants", "name avatarUrl");
-    if (!event) return res.status(404).json({ message: "Event not found" });
-    return res.json(event);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-export const updateEvent = async (req, res) => {
-  try {
-    const updated = await Event.findOneAndUpdate(
-      { _id: req.params.id, createdBy: req.user._id },
-      req.body,
-      { new: true }
-    );
-    if (!updated)
-      return res
-        .status(404)
-        .json({ message: "Event not found or not authorized" });
-    return res.json(updated);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-export const deleteEvent = async (req, res) => {
-  try {
-    const deleted = await Event.findOneAndDelete({
-      _id: req.params.id,
-      createdBy: req.user._id,
+    const ev = await Event.create({
+      name,
+      description,
+      activityType,
+      location,
+      startsAt: new Date(startsAt),
+      endsAt: new Date(endsAt),
+      capacity: capacity || 50,
+      createdBy: req.user.id,
+      participants: [req.user.id],
     });
-    if (!deleted)
-      return res
-        .status(404)
-        .json({ message: "Event not found or not authorized" });
-    return res.json({ message: "Event deleted" });
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
+    res.status(201).json(ev);
+  } catch (e) {
+    res.status(500).json({ message: e.message || "Failed to create event" });
   }
 };
 
 export const joinEvent = async (req, res) => {
   try {
-    const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: "Event not found" });
-    if (
-      !event.participants.find((u) => u.toString() === req.user._id.toString())
-    ) {
-      event.participants.push(req.user._id);
-      await event.save();
+    const id = req.params.id;
+    const ev = await Event.findById(id);
+    if (!ev) return res.status(404).json({ message: "Event not found" });
+    const uid = String(req.user.id);
+    if (ev.participants.map(String).includes(uid)) {
+      return res.status(400).json({ message: "Already joined" });
     }
-    return res.json(event);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
+    if (ev.participants.length >= ev.capacity) {
+      return res.status(400).json({ message: "Event full" });
+    }
+    ev.participants.push(req.user.id);
+    await ev.save();
+    res.json(ev);
+  } catch (e) {
+    res.status(500).json({ message: e.message || "Failed to join event" });
   }
 };
 
 export const leaveEvent = async (req, res) => {
   try {
-    const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: "Event not found" });
-    event.participants = event.participants.filter(
-      (u) => u.toString() !== req.user._id.toString()
-    );
-    await event.save();
-    return res.json(event);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-export const likeEvent = async (req, res) => {
-  try {
-    const event = await Event.findByIdAndUpdate(
-      req.params.id,
-      { $addToSet: { likes: req.user._id } },
+    const id = req.params.id;
+    const uid = String(req.user.id);
+    const ev = await Event.findByIdAndUpdate(
+      id,
+      { $pull: { participants: req.user.id } },
       { new: true }
     );
-    if (!event) return res.status(404).json({ message: "Event not found" });
-    return res.json(event);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
+    if (!ev) return res.status(404).json({ message: "Event not found" });
+    res.json(ev);
+  } catch (e) {
+    res.status(500).json({ message: e.message || "Failed to leave event" });
   }
 };
 
-export const commentOnEvent = async (req, res) => {
-  // Placeholder: implement comments collection later
-  return res.status(501).json({ message: "Comments not implemented" });
-};
-
-export const getFeed = async (req, res) => {
+export const myEvents = async (req, res) => {
   try {
-    const { lat, lng, radiusKm = 10, type, timeOfDay, dateFilter } = req.query;
-    const filter = { visibility: "public" };
-
-    // Type filter
-    if (type) filter.type = type;
-
-    // Date filter
-    const now = new Date();
-    if (dateFilter === "today") {
-      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const end = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() + 1
-      );
-      filter.date = { $gte: start, $lt: end };
-    } else if (dateFilter === "tomorrow") {
-      const start = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() + 1
-      );
-      const end = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() + 2
-      );
-      filter.date = { $gte: start, $lt: end };
-    }
-
-    // Time of day
-    if (timeOfDay) {
-      const ranges = {
-        morning: ["05:00", "11:59"],
-        afternoon: ["12:00", "16:59"],
-        evening: ["17:00", "20:59"],
-        night: ["21:00", "23:59"],
-      };
-      const r = ranges[timeOfDay];
-      if (r) filter.startTime = { $gte: r[0], $lte: r[1] };
-    }
-
-    // Geospatial filter
-    if (lat !== undefined && lng !== undefined) {
-      const meters = Number(radiusKm) * 1000;
-      filter.locationGeo = {
-        $near: {
-          $geometry: { type: "Point", coordinates: [Number(lng), Number(lat)] },
-          $maxDistance: meters,
-        },
-      };
-    }
-
-    const events = await Event.find(filter)
-      .limit(200)
-      .populate("createdBy", "name avatarUrl");
-    return res.json(events);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
+    const me = req.user.id;
+    const [created, joined] = await Promise.all([
+      Event.find({ createdBy: me }).sort({ startsAt: 1 }),
+      Event.find({ participants: me }).sort({ startsAt: 1 }),
+    ]);
+    res.json({ created, joined });
+  } catch (e) {
+    res.status(500).json({ message: e.message || "Failed to load my events" });
   }
 };

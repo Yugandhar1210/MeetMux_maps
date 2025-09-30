@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { authApi, usersApi, connectionsApi } from "../utils/api";
+import { authApi, usersApi, connectionsApi, eventsApi } from "../utils/api";
 
 export default function Profile() {
   const [me, setMe] = useState(null);
@@ -14,6 +14,7 @@ export default function Profile() {
   });
   const [requests, setRequests] = useState([]);
   const [connectionsList, setConnectionsList] = useState([]); // NEW
+  const [myEvents, setMyEvents] = useState({ created: [], joined: [] });
 
   useEffect(() => {
     (async () => {
@@ -51,6 +52,12 @@ export default function Profile() {
           typeof c === "string" ? { _id: c } : c
         );
         setConnectionsList(normalized);
+
+        const ev = await eventsApi.mine();
+        setMyEvents({
+          created: ev.data?.created || [],
+          joined: ev.data?.joined || [],
+        });
       } catch (e) {
         console.error(e);
       } finally {
@@ -259,6 +266,52 @@ export default function Profile() {
                 >
                   Reject
                 </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Activities: created */}
+      <div className="bg-white p-4 rounded shadow">
+        <h2 className="font-semibold mb-2">Your Activities (Created)</h2>
+        {myEvents.created.length === 0 && (
+          <p className="text-sm text-gray-500">No activities created.</p>
+        )}
+        <ul className="grid gap-2">
+          {myEvents.created.map((ev) => (
+            <li key={ev._id} className="border rounded px-3 py-2">
+              <div className="font-medium">
+                {ev.name}{" "}
+                <span className="text-xs text-gray-500">
+                  ({ev.activityType})
+                </span>
+              </div>
+              <div className="text-xs text-gray-500">
+                {new Date(ev.startsAt).toLocaleString()}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Activities: joined */}
+      <div className="bg-white p-4 rounded shadow">
+        <h2 className="font-semibold mb-2">Your Activities (Joined)</h2>
+        {myEvents.joined.length === 0 && (
+          <p className="text-sm text-gray-500">No activities joined.</p>
+        )}
+        <ul className="grid gap-2">
+          {myEvents.joined.map((ev) => (
+            <li key={ev._id} className="border rounded px-3 py-2">
+              <div className="font-medium">
+                {ev.name}{" "}
+                <span className="text-xs text-gray-500">
+                  ({ev.activityType})
+                </span>
+              </div>
+              <div className="text-xs text-gray-500">
+                {new Date(ev.startsAt).toLocaleString()}
               </div>
             </li>
           ))}

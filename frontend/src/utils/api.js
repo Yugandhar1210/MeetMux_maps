@@ -47,4 +47,12 @@ export const connectionsApi = {
   listConnections: () => api.get("/connections"),
 };
 
+export const eventsApi = {
+  list: (params) => api.get("/events", { params }),
+  mine: () => api.get("/events/mine"),
+  create: (data) => api.post("/events", data),
+  join: (id) => api.post(`/events/${id}/join`),
+  leave: (id) => api.post(`/events/${id}/leave`),
+};
+
 export default api;
