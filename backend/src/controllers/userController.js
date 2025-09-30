@@ -58,10 +58,11 @@ export const loginUser = async (req, res) => {
 
 export const getProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select("-password");
-    return res.json(user);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
+    const user = await User.findById(req.user.id).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.json(user); // flat user object
+  } catch (e) {
+    res.status(500).json({ message: e.message || "Failed to load profile" });
   }
 };
 
@@ -81,9 +82,8 @@ export const updateProfile = async (req, res) => {
     const user = await User.findByIdAndUpdate(req.user.id, updates, {
       new: true,
       runValidators: true,
-    })
-      .select("-password")
-      .exec();
+      select: "-password",
+    });
     res.json(user);
   } catch (e) {
     res.status(500).json({ message: e.message || "Update failed" });

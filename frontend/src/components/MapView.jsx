@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet"; // add useMap
 import L from "leaflet";
 import useSocket from "../hooks/useSocket";
 import { authApi, usersApi, connectionsApi } from "../utils/api";
@@ -69,35 +69,44 @@ export default function MapView() {
   const [connections, setConnections] = useState([]);
   const [activity, setActivity] = useState(""); // optional activity filter
   const [meId, setMeId] = useState(null);
+  const [map, setMap] = useState(null); // NEW: hold map instance
+  const [selfPos, setSelfPos] = useState(null);
+
   const socket = useSocket();
   const [heatmap, setHeatmap] = useState(false);
 
-  // Initial fetch: nearby users + connections
+  // Initial fetch: nearby users + connections + profile
   useEffect(() => {
     (async () => {
       try {
         const token = localStorage.getItem("token");
-        if (!token) {
-          setNeedsAuth(true);
-          return;
-        }
-        const meRes = await authApi.me();
-        setMe(meRes.data || null);
+        if (!token) return setNeedsAuth(true);
 
-        const [near, cons] = await Promise.all([
-          usersApi.nearby({ lat: 17.6868, lng: 83.2185, radius: 3000 }),
-          connectionsApi.listConnections(),
-        ]);
+        const meRes = await authApi.me();
+        const meObj = meRes.data?.user || meRes.data; // tolerate both shapes
+        setMe(meObj);
+        setMeId(meObj?._id || null);
+
+        const plat = Number(meObj?.location?.lat);
+        const plng = Number(meObj?.location?.lng);
+        if (Number.isFinite(plat) && Number.isFinite(plng))
+          setSelfPos({ lat: plat, lng: plng });
+
+        const near = await usersApi.nearby({
+          lat: 17.6868,
+          lng: 83.2185,
+          radius: 3000,
+        });
         setUsers(Array.isArray(near.data) ? near.data : []);
-        setConnections(
-          cons.data?.map((c) => c.requester?._id || c.receiver?._id) || []
-        );
+
+        // handle 404 gracefully
+        try {
+          const cons = await connectionsApi.listConnections();
+          setConnections(cons.data || []);
+        } catch {}
       } catch (e) {
-        if (e?.response?.status === 401) {
-          setNeedsAuth(true);
-        } else {
-          console.error(e);
-        }
+        if (e?.response?.status === 401) setNeedsAuth(true);
+        else console.error(e);
       }
     })();
   }, []);
@@ -166,6 +175,33 @@ export default function MapView() {
     }
   };
 
+  // NEW: relocate handler
+  const relocateToUser = () => {
+    const lat = Number(me?.location?.lat);
+    const lng = Number(me?.location?.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      setSelfPos({ lat, lng });
+      if (map) map.flyTo([lat, lng], 15, { duration: 0.75 });
+      return;
+    }
+    if (!("geolocation" in navigator))
+      return alert("Geolocation not supported");
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setSelfPos({ lat: latitude, lng: longitude });
+        if (map) map.flyTo([latitude, longitude], 15, { duration: 0.75 });
+        try {
+          await usersApi.updateProfile({
+            location: { lat: latitude, lng: longitude },
+          });
+        } catch {}
+      },
+      () => alert("Unable to get your location."),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
   return (
     <div className="relative h-[calc(100vh-56px)] w-full">
       {needsAuth && (
@@ -221,62 +257,76 @@ export default function MapView() {
         </a>
       </div>
 
+      {/* NEW: bottom-right locate button */}
+      <button
+        className="absolute z-[1000] bottom-4 right-4 px-3 py-2 rounded-full bg-white shadow border text-sm"
+        onClick={relocateToUser}
+        title="Locate me"
+      >
+        Locate me
+      </button>
+
       <MapContainer
         center={[17.6868, 83.2185]}
         zoom={14}
         className="h-full w-full"
+        whenCreated={setMap} // NEW: capture map instance
       >
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        {showMe && (
+
+        {/* NEW: your marker (green) */}
+        {selfPos && (
           <Marker
-            position={[meLat, meLng]}
+            position={[selfPos.lat, selfPos.lng]}
             icon={avatarIcon(
-              String((me?.name || "Y")[0]).toUpperCase(),
+              String(me?.name?.[0] || "Y").toUpperCase(),
               "#16a34a"
             )}
           >
             <Popup>
               <div className="font-medium">
-                {me?.name} <span className="text-xs text-green-600">(You)</span>
+                {me?.name || "You"}{" "}
+                <span className="text-xs text-green-600">(You)</span>
               </div>
               <div className="text-xs text-gray-500">
-                {(me?.interests || []).join(", ")}
+                {Array.isArray(me?.interests) ? me.interests.join(", ") : ""}
               </div>
             </Popup>
           </Marker>
         )}
+
+        {/* existing users markers (blue) */}
         {!heatmap &&
-          filteredUsers.map((u) => {
-            const id = u._id || u.userId;
-            const label = String((u.name || "U")[0]).toUpperCase();
-            return (
-              <Marker
-                key={id}
-                position={[u.lat, u.lng]}
-                icon={avatarIcon(label, "#2563eb")}
-              >
-                <Popup>
-                  <div className="space-y-1">
-                    <div className="font-medium">{u.name || id}</div>
-                    <div className="text-xs text-gray-500">
-                      {(u.interests || []).join(", ")}
+          filteredUsers
+            .filter((u) => (u._id || u.userId) !== meId) // avoid dup with self
+            .map((u) => {
+              const id = u._id || u.userId;
+              const label = String((u.name || "U")[0]).toUpperCase();
+              return (
+                <Marker
+                  key={id}
+                  position={[u.lat, u.lng]}
+                  icon={avatarIcon(label, "#2563eb")}
+                >
+                  <Popup>
+                    <div className="space-y-1">
+                      <div className="font-medium">{u.name || id}</div>
+                      <div className="text-xs text-gray-500">
+                        {(u.interests || []).join(", ")}
+                      </div>
+                      <button
+                        className="mt-1 px-2 py-1 text-sm bg-blue-600 text-white rounded"
+                        onClick={() => sendConnect(id)}
+                      >
+                        Connect
+                      </button>
                     </div>
-                    <button
-                      className="mt-1 px-2 py-1 text-sm bg-blue-600 text-white rounded"
-                      onClick={() => sendConnect(id)}
-                    >
-                      Connect
-                    </button>
-                  </div>
-                </Popup>
-              </Marker>
-            );
-          })}
-        {heatmap && (
-          <HeatmapLayer
-            points={filteredUsers.map((u) => [u.lat, u.lng, 0.8])}
-          />
-        )}
+                  </Popup>
+                </Marker>
+              );
+            })}
+
+        {heatmap && <HeatmapLayer points={heatPoints} />}
       </MapContainer>
     </div>
   );

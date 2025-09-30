@@ -3,6 +3,7 @@ import { authApi, usersApi, connectionsApi } from "../utils/api";
 
 export default function Profile() {
   const [me, setMe] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({
     name: "",
     avatarUrl: "",
@@ -14,21 +15,31 @@ export default function Profile() {
   const [requests, setRequests] = useState([]);
 
   useEffect(() => {
-    const load = async () => {
-      const { data } = await authApi.me();
-      setMe(data);
-      setForm({
-        name: data.name || "",
-        avatarUrl: data.avatarUrl || "",
-        bio: data.bio || "",
-        interests: (data.interests || []).join(", "),
-        lat: data?.location?.lat ?? "",
-        lng: data?.location?.lng ?? "",
-      });
-      const reqs = await connectionsApi.listRequests();
-      setRequests(reqs.data || []);
-    };
-    load().catch(console.error);
+    (async () => {
+      try {
+        const res = await authApi.me();
+        const data = res.data?.user || res.data; // tolerate both shapes
+        setMe(data);
+        setForm({
+          name: data?.name || "",
+          avatarUrl: data?.avatarUrl || "",
+          bio: data?.bio || "",
+          interests: Array.isArray(data?.interests)
+            ? data.interests.join(", ")
+            : "",
+          lat: data?.location?.lat ?? "",
+          lng: data?.location?.lng ?? "",
+        });
+        try {
+          const reqs = await connectionsApi.listRequests();
+          setRequests(reqs.data || []);
+        } catch {}
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, []);
 
   const save = async (e) => {
@@ -46,14 +57,9 @@ export default function Profile() {
         lng: Number(form.lng),
       },
     });
-    const { data } = await authApi.me();
+    const res = await authApi.me();
+    const data = res.data?.user || res.data;
     setMe(data);
-  };
-
-  const respond = async (requestId, action) => {
-    await connectionsApi.respondRequest({ requestId, action });
-    const reqs = await connectionsApi.listRequests();
-    setRequests(reqs.data || []);
   };
 
   const logout = () => {
@@ -61,10 +67,12 @@ export default function Profile() {
     window.location.href = "/login";
   };
 
+  if (loading) return <div className="p-4">Loading...</div>;
+
   return (
     <div className="max-w-3xl mx-auto p-4 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Your Profile</h1>
+        <h1 className="text-xl font-semibold">{me?.name || "Your Profile"}</h1>
         <div className="space-x-2">
           <a href="/" className="px-3 py-2 border rounded">
             Home

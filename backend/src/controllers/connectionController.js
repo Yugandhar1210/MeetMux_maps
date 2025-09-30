@@ -1,4 +1,5 @@
 import Connection from "../models/Connection.js";
+import User from "../models/User.js";
 
 export const sendRequest = async (req, res) => {
   try {
@@ -33,15 +34,23 @@ export const respondRequest = async (req, res) => {
 
 export const listConnections = async (req, res) => {
   try {
-    const list = await Connection.find({
-      $or: [{ requester: req.user._id }, { receiver: req.user._id }],
+    const me = req.user.id;
+    const cons = await Connection.find({
       status: "accepted",
+      $or: [{ requester: me }, { receiver: me }],
     })
-      .populate("requester", "name avatarUrl")
-      .populate("receiver", "name avatarUrl");
-    return res.json(list);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
+      .populate({ path: "requester", select: "name email" })
+      .populate({ path: "receiver", select: "name email" });
+
+    // return the other party’s userId
+    const ids = cons.map((c) =>
+      String(c.requester?._id) === me ? c.receiver?._id : c.requester?._id
+    );
+    res.json(ids);
+  } catch (e) {
+    res
+      .status(500)
+      .json({ message: e.message || "Failed to list connections" });
   }
 };
 
