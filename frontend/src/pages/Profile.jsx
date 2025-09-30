@@ -13,12 +13,13 @@ export default function Profile() {
     lng: "",
   });
   const [requests, setRequests] = useState([]);
+  const [connectionsList, setConnectionsList] = useState([]); // NEW
 
   useEffect(() => {
     (async () => {
       try {
         const res = await authApi.me();
-        const data = res.data?.user || res.data; // tolerate both shapes
+        const data = res.data?.user || res.data;
         setMe(data);
         setForm({
           name: data?.name || "",
@@ -30,10 +31,26 @@ export default function Profile() {
           lat: data?.location?.lat ?? "",
           lng: data?.location?.lng ?? "",
         });
+
+        // Notifications (pending requests)
         try {
           const reqs = await connectionsApi.listRequests();
           setRequests(reqs.data || []);
         } catch {}
+
+        // Connections: prefer from profile if present, else fallback to API
+        let cons = Array.isArray(data?.connections) ? data.connections : [];
+        if (!cons.length) {
+          try {
+            const c = await connectionsApi.listConnections();
+            cons = c.data || [];
+          } catch {}
+        }
+        // normalize to objects: { _id, name, email, avatarUrl }
+        const normalized = cons.map((c) =>
+          typeof c === "string" ? { _id: c } : c
+        );
+        setConnectionsList(normalized);
       } catch (e) {
         console.error(e);
       } finally {
@@ -52,14 +69,29 @@ export default function Profile() {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
-      location: {
-        lat: Number(form.lat),
-        lng: Number(form.lng),
-      },
+      location: { lat: Number(form.lat), lng: Number(form.lng) },
     });
     const res = await authApi.me();
     const data = res.data?.user || res.data;
     setMe(data);
+  };
+
+  const respond = async (requestId, action) => {
+    try {
+      await connectionsApi.respondRequest({ requestId, action });
+      setRequests((prev) => prev.filter((r) => r._id !== requestId));
+      // If accepted, refresh connections
+      if (action === "accept") {
+        const meRes = await authApi.me();
+        const data = meRes.data?.user || meRes.data;
+        const cons = Array.isArray(data?.connections) ? data.connections : [];
+        setConnectionsList(
+          cons.map((c) => (typeof c === "string" ? { _id: c } : c))
+        );
+      }
+    } catch (e) {
+      alert(e?.response?.data?.message || "Failed to update request");
+    }
   };
 
   const logout = () => {
@@ -92,6 +124,7 @@ export default function Profile() {
         </div>
       </div>
 
+      {/* Profile form */}
       <form onSubmit={save} className="space-y-3 bg-white p-4 rounded shadow">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label className="flex flex-col">
@@ -149,6 +182,51 @@ export default function Profile() {
         </button>
       </form>
 
+      {/* Connections list (green styling, no connect button) */}
+      <div className="bg-white p-4 rounded shadow">
+        <h2 className="font-semibold mb-2">Your Connections</h2>
+        {connectionsList.length === 0 && (
+          <p className="text-sm text-gray-500">No connections yet.</p>
+        )}
+        <ul className="grid gap-2">
+          {connectionsList.map((c) => {
+            const id = c?._id || c?.id || String(c);
+            const name = c?.name || c?.email || id;
+            const email = c?.email;
+            const avatar = c?.avatarUrl;
+            return (
+              <li
+                key={id}
+                className="flex items-center justify-between rounded border border-green-200 bg-green-50 px-3 py-2"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-600" />
+                  {avatar ? (
+                    <img
+                      src={avatar}
+                      alt={name}
+                      className="w-8 h-8 rounded-full object-cover border border-white shadow"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center font-bold">
+                      {String(name)[0]?.toUpperCase() || "U"}
+                    </div>
+                  )}
+                  <div>
+                    <div className="font-medium text-green-800">{name}</div>
+                    {email && (
+                      <div className="text-xs text-green-700">{email}</div>
+                    )}
+                  </div>
+                </div>
+                {/* No connect button for connections */}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      {/* Notifications: pending requests */}
       <div className="bg-white p-4 rounded shadow">
         <h2 className="font-semibold mb-2">
           Notifications: Connection Requests

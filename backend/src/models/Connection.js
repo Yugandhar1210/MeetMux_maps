@@ -21,4 +21,7 @@ const connectionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// prevent duplicates in the same direction
+connectionSchema.index({ requester: 1, receiver: 1 }, { unique: true });
+
 export default mongoose.model("Connection", connectionSchema);

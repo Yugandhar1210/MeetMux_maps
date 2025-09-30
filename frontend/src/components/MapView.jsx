@@ -66,7 +66,8 @@ export default function MapView() {
   const [me, setMe] = useState(null);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [filter, setFilter] = useState("all"); // all | live | connections
-  const [connections, setConnections] = useState([]);
+  const [connections, setConnections] = useState([]); // store user objects
+  const [connectionIds, setConnectionIds] = useState(new Set()); // fast lookup
   const [activity, setActivity] = useState(""); // optional activity filter
   const [meId, setMeId] = useState(null);
   const [map, setMap] = useState(null); // NEW: hold map instance
@@ -83,7 +84,7 @@ export default function MapView() {
         if (!token) return setNeedsAuth(true);
 
         const meRes = await authApi.me();
-        const meObj = meRes.data?.user || meRes.data; // tolerate both shapes
+        const meObj = meRes.data?.user || meRes.data;
         setMe(meObj);
         setMeId(meObj?._id || null);
 
@@ -102,7 +103,9 @@ export default function MapView() {
         // handle 404 gracefully
         try {
           const cons = await connectionsApi.listConnections();
-          setConnections(cons.data || []);
+          const list = Array.isArray(cons.data) ? cons.data : [];
+          setConnections(list);
+          setConnectionIds(new Set(list.map((u) => u?._id).filter(Boolean)));
         } catch {}
       } catch (e) {
         if (e?.response?.status === 401) setNeedsAuth(true);
@@ -152,9 +155,9 @@ export default function MapView() {
     if (filter === "live")
       list = list.filter((u) => u.isOnline || u.status === "online");
     else if (filter === "connections")
-      list = list.filter((u) => connections.includes(u._id));
+      list = list.filter((u) => connectionIds.has(u._id));
     return list;
-  }, [users, filter, activity, connections]);
+  }, [users, filter, activity, connectionIds]);
 
   const meLat = Number(me?.location?.lat);
   const meLng = Number(me?.location?.lng);
@@ -170,8 +173,7 @@ export default function MapView() {
       await connectionsApi.sendRequest(targetId);
       alert("Request sent");
     } catch (e) {
-      console.error(e);
-      alert("Failed to send request");
+      alert(e?.response?.data?.message || "Failed to send request");
     }
   };
 
@@ -221,6 +223,7 @@ export default function MapView() {
           </div>
         </div>
       )}
+      {/* legend */}
       <div className="absolute z-[1000] top-4 left-4 bg-white rounded shadow px-3 py-2 space-x-2 flex items-center">
         <select
           className="border rounded px-2 py-1"
@@ -255,6 +258,23 @@ export default function MapView() {
         <a className="px-2 py-1 border rounded" href="/">
           Home
         </a>
+        <div className="ml-2 text-xs text-gray-600 flex items-center gap-3">
+          <span
+            className="inline-block w-3 h-3 rounded-full"
+            style={{ background: "#ff0000ff" }}
+          ></span>{" "}
+          You
+          <span
+            className="inline-block w-3 h-3 rounded-full"
+            style={{ background: "#16a34a" }}
+          ></span>{" "}
+          Connections
+          <span
+            className="inline-block w-3 h-3 rounded-full"
+            style={{ background: "#2563eb" }}
+          ></span>{" "}
+          Others
+        </div>
       </div>
 
       {/* NEW: bottom-right locate button */}
@@ -274,19 +294,19 @@ export default function MapView() {
       >
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
-        {/* NEW: your marker (green) */}
+        {/* NEW: your marker (red) */}
         {selfPos && (
           <Marker
             position={[selfPos.lat, selfPos.lng]}
             icon={avatarIcon(
               String(me?.name?.[0] || "Y").toUpperCase(),
-              "#16a34a"
+              "#ff0000ff"
             )}
           >
             <Popup>
               <div className="font-medium">
                 {me?.name || "You"}{" "}
-                <span className="text-xs text-green-600">(You)</span>
+                <span className="text-xs text-red-600">(You)</span>
               </div>
               <div className="text-xs text-gray-500">
                 {Array.isArray(me?.interests) ? me.interests.join(", ") : ""}
@@ -301,25 +321,36 @@ export default function MapView() {
             .filter((u) => (u._id || u.userId) !== meId) // avoid dup with self
             .map((u) => {
               const id = u._id || u.userId;
+              const isConn = connectionIds.has(id);
+              const color = isConn ? "#16a34a" : "#2563eb";
               const label = String((u.name || "U")[0]).toUpperCase();
               return (
                 <Marker
                   key={id}
                   position={[u.lat, u.lng]}
-                  icon={avatarIcon(label, "#2563eb")}
+                  icon={avatarIcon(label, color)}
                 >
                   <Popup>
                     <div className="space-y-1">
-                      <div className="font-medium">{u.name || id}</div>
+                      <div className="font-medium">
+                        {u.name || id}{" "}
+                        {isConn && (
+                          <span className="text-xs text-green-600">
+                            • Connection
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-gray-500">
                         {(u.interests || []).join(", ")}
                       </div>
-                      <button
-                        className="mt-1 px-2 py-1 text-sm bg-blue-600 text-white rounded"
-                        onClick={() => sendConnect(id)}
-                      >
-                        Connect
-                      </button>
+                      {!isConn && (
+                        <button
+                          className="mt-1 px-2 py-1 text-sm bg-blue-600 text-white rounded"
+                          onClick={() => sendConnect(id)}
+                        >
+                          Connect
+                        </button>
+                      )}
                     </div>
                   </Popup>
                 </Marker>
