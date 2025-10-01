@@ -1,20 +1,50 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { authApi, usersApi, connectionsApi, eventsApi } from "../utils/api";
+
+function formatDate(dt) {
+  try {
+    return new Date(dt).toLocaleString();
+  } catch {
+    return "";
+  }
+}
 
 export default function Profile() {
   const [me, setMe] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("profile");
+
+  // Form state
   const [form, setForm] = useState({
     name: "",
     avatarUrl: "",
     bio: "",
-    interests: "",
     lat: "",
     lng: "",
   });
+  const [interestsArr, setInterestsArr] = useState([]);
+  const [interestInput, setInterestInput] = useState("");
+
+  // Lists
   const [requests, setRequests] = useState([]);
-  const [connectionsList, setConnectionsList] = useState([]); // NEW
+  const [connectionsList, setConnectionsList] = useState([]);
   const [myEvents, setMyEvents] = useState({ created: [], joined: [] });
+
+  // UI state
+  const [saving, setSaving] = useState(false);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [reqAction, setReqAction] = useState({});
+  const [leaving, setLeaving] = useState({});
+  const [toast, setToast] = useState(null);
+
+  const latValid = useMemo(
+    () => form.lat === "" || !Number.isNaN(Number(form.lat)),
+    [form.lat]
+  );
+  const lngValid = useMemo(
+    () => form.lng === "" || !Number.isNaN(Number(form.lng)),
+    [form.lng]
+  );
 
   useEffect(() => {
     (async () => {
@@ -22,300 +52,619 @@ export default function Profile() {
         const res = await authApi.me();
         const data = res.data?.user || res.data;
         setMe(data);
+
         setForm({
           name: data?.name || "",
           avatarUrl: data?.avatarUrl || "",
           bio: data?.bio || "",
-          interests: Array.isArray(data?.interests)
-            ? data.interests.join(", ")
-            : "",
           lat: data?.location?.lat ?? "",
           lng: data?.location?.lng ?? "",
         });
+        setInterestsArr(Array.isArray(data?.interests) ? data.interests : []);
 
-        // Notifications (pending requests)
+        // Load data
         try {
-          const reqs = await connectionsApi.listRequests();
+          const [reqs, cons, events] = await Promise.all([
+            connectionsApi.listRequests(),
+            connectionsApi.listConnections(),
+            eventsApi.mine(),
+          ]);
           setRequests(reqs.data || []);
+          setConnectionsList(cons.data || []);
+          setMyEvents({
+            created: events.data?.created || [],
+            joined: events.data?.joined || [],
+          });
         } catch {}
-
-        // Connections: prefer from profile if present, else fallback to API
-        let cons = Array.isArray(data?.connections) ? data.connections : [];
-        if (!cons.length) {
-          try {
-            const c = await connectionsApi.listConnections();
-            cons = c.data || [];
-          } catch {}
-        }
-        // normalize to objects: { _id, name, email, avatarUrl }
-        const normalized = cons.map((c) =>
-          typeof c === "string" ? { _id: c } : c
-        );
-        setConnectionsList(normalized);
-
-        const ev = await eventsApi.mine();
-        setMyEvents({
-          created: ev.data?.created || [],
-          joined: ev.data?.joined || [],
-        });
       } catch (e) {
         console.error(e);
+        setToast({ type: "error", msg: "Failed to load profile" });
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  const save = async (e) => {
-    e.preventDefault();
-    await usersApi.updateProfile({
-      name: form.name,
-      avatarUrl: form.avatarUrl,
-      bio: form.bio,
-      interests: form.interests
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-      location: { lat: Number(form.lat), lng: Number(form.lng) },
-    });
-    const res = await authApi.me();
-    const data = res.data?.user || res.data;
-    setMe(data);
+  const showToast = (t, msg) => {
+    setToast({ type: t, msg });
+    window.clearTimeout(showToast._t);
+    showToast._t = window.setTimeout(() => setToast(null), 3000);
   };
 
-  const respond = async (requestId, action) => {
+  const onSave = async (e) => {
+    e.preventDefault();
+    if (!latValid || !lngValid) {
+      showToast("error", "Please provide valid coordinates.");
+      return;
+    }
+    setSaving(true);
     try {
-      await connectionsApi.respondRequest({ requestId, action });
-      setRequests((prev) => prev.filter((r) => r._id !== requestId));
-      // If accepted, refresh connections
-      if (action === "accept") {
-        const meRes = await authApi.me();
-        const data = meRes.data?.user || meRes.data;
-        const cons = Array.isArray(data?.connections) ? data.connections : [];
-        setConnectionsList(
-          cons.map((c) => (typeof c === "string" ? { _id: c } : c))
-        );
-      }
+      await usersApi.updateProfile({
+        name: form.name,
+        avatarUrl: form.avatarUrl,
+        bio: form.bio,
+        interests: interestsArr,
+        location: {
+          lat: form.lat === "" ? undefined : Number(form.lat),
+          lng: form.lng === "" ? undefined : Number(form.lng),
+        },
+      });
+      const res = await authApi.me();
+      const data = res.data?.user || res.data;
+      setMe(data);
+      showToast("success", "Profile updated successfully!");
     } catch (e) {
-      alert(e?.response?.data?.message || "Failed to update request");
+      showToast("error", e?.response?.data?.message || "Save failed");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem("token");
-    window.location.href = "/login";
+  const addInterest = () => {
+    const v = interestInput.trim();
+    if (!v) return;
+    if (!interestsArr.includes(v)) {
+      setInterestsArr((a) => [...a, v]);
+    }
+    setInterestInput("");
   };
 
-  if (loading) return <div className="p-4">Loading...</div>;
+  const removeInterest = (i) => {
+    setInterestsArr((a) => a.filter((x, idx) => idx !== i));
+  };
+
+  const useMyLocation = () => {
+    if (!("geolocation" in navigator)) {
+      showToast("error", "Geolocation not supported");
+      return;
+    }
+    setGeoLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setForm((f) => ({
+          ...f,
+          lat: latitude.toFixed(6),
+          lng: longitude.toFixed(6),
+        }));
+        try {
+          await usersApi.updateProfile({
+            location: { lat: latitude, lng: longitude },
+          });
+          showToast("success", "Location updated successfully!");
+        } catch (e) {
+          showToast(
+            "error",
+            e?.response?.data?.message || "Failed to update location"
+          );
+        } finally {
+          setGeoLoading(false);
+        }
+      },
+      () => {
+        setGeoLoading(false);
+        showToast("error", "Unable to get your location");
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  const respond = async (requestId, action) => {
+    setReqAction((m) => ({ ...m, [requestId]: action }));
+    try {
+      await connectionsApi.respondRequest({ requestId, action });
+      setRequests((prev) => prev.filter((r) => r._id !== requestId));
+      if (action === "accept") {
+        const cons = await connectionsApi.listConnections();
+        setConnectionsList(cons.data || []);
+      }
+      showToast("success", `Request ${action}ed successfully!`);
+    } catch (e) {
+      showToast(
+        "error",
+        e?.response?.data?.message || "Failed to update request"
+      );
+    } finally {
+      setReqAction((m) => {
+        const x = { ...m };
+        delete x[requestId];
+        return x;
+      });
+    }
+  };
+
+  const leaveEvent = async (id) => {
+    setLeaving((m) => ({ ...m, [id]: true }));
+    try {
+      await eventsApi.leave(id);
+      const ev = await eventsApi.mine();
+      setMyEvents({
+        created: ev.data?.created || [],
+        joined: ev.data?.joined || [],
+      });
+      showToast("success", "Left the activity successfully!");
+    } catch (e) {
+      showToast("error", e?.response?.data?.message || "Failed to leave");
+    } finally {
+      setLeaving((m) => {
+        const x = { ...m };
+        delete x[id];
+        return x;
+      });
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="profile-container">
+        <div className="loading-skeleton">
+          <div className="skeleton-header"></div>
+          <div className="skeleton-card"></div>
+          <div className="skeleton-card"></div>
+          <div className="skeleton-card"></div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-3xl mx-auto p-4 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{me?.name || "Your Profile"}</h1>
-        <div className="space-x-2">
-          <a href="/" className="px-3 py-2 border rounded">
-            Home
-          </a>
-          <a href="/login" className="px-3 py-2 border rounded">
-            Login
-          </a>
-          <a href="/register" className="px-3 py-2 border rounded">
-            Sign Up
-          </a>
-          <button
-            onClick={logout}
-            className="px-3 py-2 bg-red-600 text-white rounded"
-          >
-            Logout
-          </button>
+    <div className="profile-container">
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          className={`toast ${
+            toast.type === "success" ? "toast-success" : "toast-error"
+          }`}
+        >
+          <span className="toast-icon">
+            {toast.type === "success" ? "✅" : "❌"}
+          </span>
+          <span>{toast.msg}</span>
+        </div>
+      )}
+
+      {/* Profile Header */}
+      <div className="profile-header">
+        <div className="profile-avatar-section">
+          <div className="profile-avatar-wrapper">
+            {form.avatarUrl ? (
+              <img
+                src={form.avatarUrl}
+                alt={form.name || "Avatar"}
+                className="profile-avatar-img"
+              />
+            ) : (
+              <div className="profile-avatar-placeholder">
+                {String(form.name || "U")[0].toUpperCase()}
+              </div>
+            )}
+            <div
+              className={`profile-status ${
+                me?.isOnline || me?.status === "online"
+                  ? "status-online"
+                  : "status-offline"
+              }`}
+              title={
+                me?.isOnline || me?.status === "online" ? "Online" : "Offline"
+              }
+            />
+          </div>
+          <div className="profile-info">
+            <h1 className="profile-name">{me?.name || "Your Profile"}</h1>
+            <p className="profile-email">{me?.email}</p>
+            <div className="profile-interests">
+              {interestsArr.slice(0, 3).map((interest, i) => (
+                <span key={i} className="interest-chip">
+                  {interest}
+                </span>
+              ))}
+              {interestsArr.length > 3 && (
+                <span className="interest-more">
+                  +{interestsArr.length - 3} more
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Profile form */}
-      <form onSubmit={save} className="space-y-3 bg-white p-4 rounded shadow">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className="text-sm">Name</span>
-            <input
-              className="border rounded px-2 py-1"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-sm">Avatar URL</span>
-            <input
-              className="border rounded px-2 py-1"
-              value={form.avatarUrl}
-              onChange={(e) => setForm({ ...form, avatarUrl: e.target.value })}
-            />
-          </label>
-          <label className="flex flex-col md:col-span-2">
-            <span className="text-sm">Bio</span>
-            <textarea
-              className="border rounded px-2 py-1"
-              rows="3"
-              value={form.bio}
-              onChange={(e) => setForm({ ...form, bio: e.target.value })}
-            />
-          </label>
-          <label className="flex flex-col md:col-span-2">
-            <span className="text-sm">Interests (comma separated)</span>
-            <input
-              className="border rounded px-2 py-1"
-              value={form.interests}
-              onChange={(e) => setForm({ ...form, interests: e.target.value })}
-            />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-sm">Latitude</span>
-            <input
-              className="border rounded px-2 py-1"
-              value={form.lat}
-              onChange={(e) => setForm({ ...form, lat: e.target.value })}
-            />
-          </label>
-          <label className="flex flex-col">
-            <span className="text-sm">Longitude</span>
-            <input
-              className="border rounded px-2 py-1"
-              value={form.lng}
-              onChange={(e) => setForm({ ...form, lng: e.target.value })}
-            />
-          </label>
+      {/* Navigation Tabs */}
+      <div className="profile-tabs">
+        <div className="tab-buttons">
+          {[
+            { id: "profile", label: "Profile", icon: "👤" },
+            {
+              id: "connections",
+              label: "Connections",
+              icon: "🤝",
+              count: connectionsList.length,
+            },
+            {
+              id: "requests",
+              label: "Requests",
+              icon: "📨",
+              count: requests.length,
+            },
+            {
+              id: "activities",
+              label: "Activities",
+              icon: "🎯",
+              count: myEvents.created.length + myEvents.joined.length,
+            },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`tab-button ${activeTab === tab.id ? "active" : ""}`}
+            >
+              <span className="tab-icon">{tab.icon}</span>
+              <span>{tab.label}</span>
+              {tab.count > 0 && <span className="tab-count">{tab.count}</span>}
+            </button>
+          ))}
         </div>
-        <button className="px-4 py-2 bg-blue-600 text-white rounded">
-          Save Profile
-        </button>
-      </form>
+      </div>
 
-      {/* Connections list (green styling, no connect button) */}
-      <div className="bg-white p-4 rounded shadow">
-        <h2 className="font-semibold mb-2">Your Connections</h2>
-        {connectionsList.length === 0 && (
-          <p className="text-sm text-gray-500">No connections yet.</p>
-        )}
-        <ul className="grid gap-2">
-          {connectionsList.map((c) => {
-            const id = c?._id || c?.id || String(c);
-            const name = c?.name || c?.email || id;
-            const email = c?.email;
-            const avatar = c?.avatarUrl;
-            return (
-              <li
-                key={id}
-                className="flex items-center justify-between rounded border border-green-200 bg-green-50 px-3 py-2"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="inline-block w-2.5 h-2.5 rounded-full bg-green-600" />
-                  {avatar ? (
-                    <img
-                      src={avatar}
-                      alt={name}
-                      className="w-8 h-8 rounded-full object-cover border border-white shadow"
+      {/* Tab Content */}
+      <div className="profile-content">
+        {activeTab === "profile" && (
+          <form onSubmit={onSave} className="profile-form">
+            <h2 className="section-title">
+              <span className="section-icon">✏️</span>
+              Edit Profile
+            </h2>
+
+            <div className="form-grid">
+              <div className="form-group">
+                <label className="form-label">Name</label>
+                <input
+                  className="form-input"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Your name"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Avatar URL</label>
+                <input
+                  className="form-input"
+                  value={form.avatarUrl}
+                  onChange={(e) =>
+                    setForm({ ...form, avatarUrl: e.target.value })
+                  }
+                  placeholder="https://example.com/avatar.jpg"
+                />
+              </div>
+
+              <div className="form-group form-group-wide">
+                <label className="form-label">Bio</label>
+                <textarea
+                  className="form-textarea"
+                  rows="4"
+                  value={form.bio}
+                  onChange={(e) => setForm({ ...form, bio: e.target.value })}
+                  placeholder="Tell others about yourself..."
+                />
+              </div>
+
+              {/* Interests */}
+              <div className="form-group form-group-wide">
+                <label className="form-label">Interests</label>
+                <div className="interests-container">
+                  {interestsArr.map((it, i) => (
+                    <span key={`${it}-${i}`} className="interest-tag">
+                      {it}
+                      <button
+                        type="button"
+                        onClick={() => removeInterest(i)}
+                        className="interest-remove"
+                        title="Remove"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                  <div className="interest-input-group">
+                    <input
+                      className="interest-input"
+                      placeholder="Add interest..."
+                      value={interestInput}
+                      onChange={(e) => setInterestInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addInterest();
+                        }
+                      }}
                     />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-green-600 text-white flex items-center justify-center font-bold">
-                      {String(name)[0]?.toUpperCase() || "U"}
-                    </div>
-                  )}
-                  <div>
-                    <div className="font-medium text-green-800">{name}</div>
-                    {email && (
-                      <div className="text-xs text-green-700">{email}</div>
-                    )}
+                    <button
+                      type="button"
+                      onClick={addInterest}
+                      className="interest-add-btn"
+                    >
+                      Add
+                    </button>
                   </div>
                 </div>
-                {/* No connect button for connections */}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+              </div>
 
-      {/* Notifications: pending requests */}
-      <div className="bg-white p-4 rounded shadow">
-        <h2 className="font-semibold mb-2">
-          Notifications: Connection Requests
-        </h2>
-        {requests.length === 0 && (
-          <p className="text-sm text-gray-500">No requests.</p>
+              {/* Location */}
+              <div className="form-group">
+                <label className="form-label">Latitude</label>
+                <input
+                  className={`form-input ${
+                    !latValid ? "form-input-error" : ""
+                  }`}
+                  value={form.lat}
+                  onChange={(e) => setForm({ ...form, lat: e.target.value })}
+                  placeholder="e.g., 17.6868"
+                />
+                {!latValid && (
+                  <span className="form-error">Invalid latitude</span>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Longitude</label>
+                <input
+                  className={`form-input ${
+                    !lngValid ? "form-input-error" : ""
+                  }`}
+                  value={form.lng}
+                  onChange={(e) => setForm({ ...form, lng: e.target.value })}
+                  placeholder="e.g., 83.2185"
+                />
+                {!lngValid && (
+                  <span className="form-error">Invalid longitude</span>
+                )}
+              </div>
+            </div>
+
+            <div className="form-actions">
+              <button
+                type="submit"
+                disabled={saving}
+                className={`btn-primary ${saving ? "btn-loading" : ""}`}
+              >
+                {saving ? (
+                  <>
+                    <span className="spinner"></span>
+                    Saving...
+                  </>
+                ) : (
+                  "💾 Save Profile"
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={useMyLocation}
+                disabled={geoLoading}
+                className={`btn-secondary ${geoLoading ? "btn-loading" : ""}`}
+              >
+                {geoLoading ? "📍 Locating..." : "📍 Use My Location"}
+              </button>
+            </div>
+          </form>
         )}
-        <ul className="space-y-2">
-          {requests.map((r) => (
-            <li
-              key={r._id}
-              className="flex items-center justify-between border rounded p-2"
-            >
-              <div>
-                <div className="font-medium">{r.requester?.name}</div>
-                <div className="text-xs text-gray-500">
-                  {r.requester?.email}
+
+        {activeTab === "connections" && (
+          <div className="content-section">
+            <h2 className="section-title">
+              <span className="section-icon">🤝</span>
+              Your Connections
+              <span className="section-count">({connectionsList.length})</span>
+            </h2>
+
+            {connectionsList.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon">👥</div>
+                <p className="empty-text">No connections yet.</p>
+                <p className="empty-subtext">
+                  Start exploring to meet new people!
+                </p>
+              </div>
+            ) : (
+              <div className="connections-grid">
+                {connectionsList.map((c) => {
+                  const id = c?._id || c?.id || String(c);
+                  const name = c?.name || c?.email || id;
+                  const email = c?.email;
+                  const avatar = c?.avatarUrl;
+                  return (
+                    <div key={id} className="connection-card">
+                      <div className="connection-avatar">
+                        {avatar ? (
+                          <img
+                            src={avatar}
+                            alt={name}
+                            className="connection-avatar-img"
+                          />
+                        ) : (
+                          <div className="connection-avatar-placeholder">
+                            {String(name)[0]?.toUpperCase() || "U"}
+                          </div>
+                        )}
+                      </div>
+                      <div className="connection-info">
+                        <div className="connection-name">{name}</div>
+                        {email && (
+                          <div className="connection-email">{email}</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "requests" && (
+          <div className="content-section">
+            <h2 className="section-title">
+              <span className="section-icon">📨</span>
+              Connection Requests
+              <span className="section-count">({requests.length})</span>
+            </h2>
+
+            {requests.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon">📭</div>
+                <p className="empty-text">No pending requests.</p>
+              </div>
+            ) : (
+              <div className="requests-list">
+                {requests.map((r) => {
+                  const busy = !!reqAction[r._id];
+                  return (
+                    <div key={r._id} className="request-card">
+                      <div className="request-info">
+                        <div className="request-avatar">
+                          {String(r.requester?.name || "U")[0]?.toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="request-name">
+                            {r.requester?.name}
+                          </div>
+                          <div className="request-email">
+                            {r.requester?.email}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="request-actions">
+                        <button
+                          className={`btn-primary ${busy ? "btn-loading" : ""}`}
+                          disabled={busy}
+                          onClick={() => respond(r._id, "accept")}
+                        >
+                          {reqAction[r._id] === "accept"
+                            ? "Accepting..."
+                            : "✅ Accept"}
+                        </button>
+                        <button
+                          className={`btn-secondary ${
+                            busy ? "btn-loading" : ""
+                          }`}
+                          disabled={busy}
+                          onClick={() => respond(r._id, "reject")}
+                        >
+                          {reqAction[r._id] === "reject"
+                            ? "Rejecting..."
+                            : "❌ Decline"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "activities" && (
+          <div className="activities-sections">
+            {/* Created Activities */}
+            <div className="content-section">
+              <h3 className="section-title">
+                <span className="section-icon">🎯</span>
+                Activities You Created
+                <span className="section-count">
+                  ({myEvents.created.length})
+                </span>
+              </h3>
+
+              {myEvents.created.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">🎪</div>
+                  <p className="empty-text">No activities created yet.</p>
                 </div>
-              </div>
-              <div className="space-x-2">
-                <button
-                  className="px-3 py-1 rounded bg-green-600 text-white"
-                  onClick={() => respond(r._id, "accept")}
-                >
-                  Accept
-                </button>
-                <button
-                  className="px-3 py-1 rounded bg-gray-200"
-                  onClick={() => respond(r._id, "reject")}
-                >
-                  Reject
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
+              ) : (
+                <div className="activities-grid">
+                  {myEvents.created.map((ev) => (
+                    <div
+                      key={ev._id}
+                      className="activity-card activity-created"
+                    >
+                      <div className="activity-header">
+                        <span className="activity-indicator activity-indicator-blue"></span>
+                        <h4 className="activity-name">{ev.name}</h4>
+                        <span className="activity-type">{ev.activityType}</span>
+                      </div>
+                      <p className="activity-date">{formatDate(ev.startsAt)}</p>
+                      <div className="activity-participants">
+                        👥 {(ev.participants || []).length}/{ev.capacity || 0}
+                      </div>
+                      <span className="activity-badge activity-badge-organizer">
+                        Organizer
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
-      {/* Activities: created */}
-      <div className="bg-white p-4 rounded shadow">
-        <h2 className="font-semibold mb-2">Your Activities (Created)</h2>
-        {myEvents.created.length === 0 && (
-          <p className="text-sm text-gray-500">No activities created.</p>
-        )}
-        <ul className="grid gap-2">
-          {myEvents.created.map((ev) => (
-            <li key={ev._id} className="border rounded px-3 py-2">
-              <div className="font-medium">
-                {ev.name}{" "}
-                <span className="text-xs text-gray-500">
-                  ({ev.activityType})
+            {/* Joined Activities */}
+            <div className="content-section">
+              <h3 className="section-title">
+                <span className="section-icon">🎭</span>
+                Activities You Joined
+                <span className="section-count">
+                  ({myEvents.joined.length})
                 </span>
-              </div>
-              <div className="text-xs text-gray-500">
-                {new Date(ev.startsAt).toLocaleString()}
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
+              </h3>
 
-      {/* Activities: joined */}
-      <div className="bg-white p-4 rounded shadow">
-        <h2 className="font-semibold mb-2">Your Activities (Joined)</h2>
-        {myEvents.joined.length === 0 && (
-          <p className="text-sm text-gray-500">No activities joined.</p>
+              {myEvents.joined.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">🎭</div>
+                  <p className="empty-text">No activities joined yet.</p>
+                </div>
+              ) : (
+                <div className="activities-grid">
+                  {myEvents.joined.map((ev) => (
+                    <div key={ev._id} className="activity-card activity-joined">
+                      <div className="activity-header">
+                        <span className="activity-indicator activity-indicator-amber"></span>
+                        <h4 className="activity-name">{ev.name}</h4>
+                        <span className="activity-type">{ev.activityType}</span>
+                      </div>
+                      <p className="activity-date">{formatDate(ev.startsAt)}</p>
+                      <button
+                        className={`btn-danger ${
+                          leaving[ev._id] ? "btn-loading" : ""
+                        }`}
+                        disabled={!!leaving[ev._id]}
+                        onClick={() => leaveEvent(ev._id)}
+                      >
+                        {leaving[ev._id] ? "Leaving..." : "🚪 Leave Activity"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         )}
-        <ul className="grid gap-2">
-          {myEvents.joined.map((ev) => (
-            <li key={ev._id} className="border rounded px-3 py-2">
-              <div className="font-medium">
-                {ev.name}{" "}
-                <span className="text-xs text-gray-500">
-                  ({ev.activityType})
-                </span>
-              </div>
-              <div className="text-xs text-gray-500">
-                {new Date(ev.startsAt).toLocaleString()}
-              </div>
-            </li>
-          ))}
-        </ul>
       </div>
     </div>
   );

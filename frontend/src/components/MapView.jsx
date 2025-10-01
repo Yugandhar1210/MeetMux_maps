@@ -62,6 +62,19 @@ function HeatmapLayer({ points }) {
   return null;
 }
 
+// Add this helper component to capture map instance
+function MapController({ setMap }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (map) {
+      setMap(map);
+    }
+  }, [map, setMap]);
+
+  return null;
+}
+
 export default function MapView() {
   const [users, setUsers] = useState([]);
   const [me, setMe] = useState(null);
@@ -96,9 +109,11 @@ export default function MapView() {
     lat: "",
     lng: "",
   });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const socket = useSocket();
   const [heatmap, setHeatmap] = useState(false);
+  const [connectionsList, setConnectionsList] = useState([]);
 
   // Initial fetch: nearby users + connections + profile
   useEffect(() => {
@@ -136,6 +151,20 @@ export default function MapView() {
         else console.error(e);
       }
     })();
+  }, []);
+
+  // Load connections when component mounts
+  useEffect(() => {
+    const loadConnections = async () => {
+      try {
+        const res = await connectionsApi.listConnections();
+        setConnectionsList(res.data || []);
+      } catch (error) {
+        console.error("Failed to load connections:", error);
+      }
+    };
+
+    loadConnections();
   }, []);
 
   // Live updates via socket
@@ -206,56 +235,133 @@ export default function MapView() {
     }
   };
 
-  // NEW: relocate handler
+  // NEW: relocate handler - FIXED VERSION
   const relocateToUser = () => {
     const lat = Number(me?.location?.lat);
     const lng = Number(me?.location?.lng);
+
     if (Number.isFinite(lat) && Number.isFinite(lng)) {
       setSelfPos({ lat, lng });
-      if (map) map.flyTo([lat, lng], 15, { duration: 0.75 });
+      if (map) {
+        map.flyTo([lat, lng], 15, { duration: 0.75 });
+      }
       return;
     }
-    if (!("geolocation" in navigator))
-      return alert("Geolocation not supported");
+
+    // If no saved location, get current geolocation
+    if (!("geolocation" in navigator)) {
+      alert("Geolocation not supported");
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
-        setSelfPos({ lat: latitude, lng: longitude });
-        if (map) map.flyTo([latitude, longitude], 15, { duration: 0.75 });
+        const newPos = { lat: latitude, lng: longitude };
+
+        setSelfPos(newPos);
+
+        // Update map view
+        if (map) {
+          map.flyTo([latitude, longitude], 15, { duration: 0.75 });
+        }
+
+        // Update user profile with new location
         try {
           await usersApi.updateProfile({
             location: { lat: latitude, lng: longitude },
           });
-        } catch {}
+
+          // Update local me state
+          setMe((prev) => ({
+            ...prev,
+            location: { lat: latitude, lng: longitude },
+          }));
+
+          console.log("Location updated successfully");
+        } catch (e) {
+          console.error("Failed to update location:", e);
+        }
       },
-      () => alert("Unable to get your location."),
-      { enableHighAccuracy: true, timeout: 8000 }
+      (error) => {
+        console.error("Geolocation error:", error);
+        alert(
+          "Unable to get your location. Please check your browser permissions."
+        );
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      }
     );
   };
+
+  const DEFAULT_EVENTS_CENTER = { lat: 12.9539456, lng: 77.4661253 }; // Bangalore
 
   // fetch events when filters change (in events mode)
   useEffect(() => {
     (async () => {
       if (mode !== "events") return;
       try {
-        const lat = Number(me?.location?.lat) || 17.6868;
-        const lng = Number(me?.location?.lng) || 83.2185;
-        const params = {
-          type: filters.type || undefined,
-          createdBy: filters.createdBy,
-          timeOfDay: filters.timeOfDay || undefined,
-          dateRange: filters.dateRange || undefined,
-          lat,
-          lng,
-          radius: 5000,
-        };
-        const res = await eventsApi.list(params);
-        setEvents(Array.isArray(res.data) ? res.data : []);
+        const lat = Number(me?.location?.lat);
+        const lng = Number(me?.location?.lng);
+
+        // Build only supported params; do NOT send createdBy: "all"
+        const params = {};
+        if (filters.type) params.activityType = filters.type; // backend usually expects 'activityType'
+        if (filters.createdBy === "connections")
+          params.createdBy = "connections";
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          params.lat = lat;
+          params.lng = lng;
+          params.radius = 20000; // 20km
+        } else {
+          params.lat = DEFAULT_EVENTS_CENTER.lat;
+          params.lng = DEFAULT_EVENTS_CENTER.lng;
+          params.radius = 20000;
+        }
+
+        let res = await eventsApi.list(params);
+        const payload1 = res?.data;
+        let list = Array.isArray(payload1)
+          ? payload1
+          : Array.isArray(payload1?.data)
+          ? payload1.data
+          : Array.isArray(payload1?.events)
+          ? payload1.events
+          : Array.isArray(payload1?.items)
+          ? payload1.items
+          : [];
+
+        // Fallback: if empty, try without any params (some backends ignore/over-filter queries)
+        if (list.length === 0) {
+          const res2 = await eventsApi.list();
+          const payload2 = res2?.data;
+          list = Array.isArray(payload2)
+            ? payload2
+            : Array.isArray(payload2?.data)
+            ? payload2.data
+            : Array.isArray(payload2?.events)
+            ? payload2.events
+            : Array.isArray(payload2?.items)
+            ? payload2.items
+            : [];
+        }
+
+        console.log("Events fetched:", list.length, list[0]);
+        setEvents(list);
       } catch (e) {
-        console.error(e);
+        console.error("Failed to fetch events:", e);
       }
     })();
-  }, [mode, filters, me]);
+  }, [
+    mode,
+    filters.type,
+    filters.createdBy, // exclude time/date; handled client-side
+    me?.location?.lat,
+    me?.location?.lng,
+  ]);
 
   // create event
   const onCreateEvent = async () => {
@@ -294,6 +400,90 @@ export default function MapView() {
     }
   };
 
+  // Add this filtering logic where you filter events
+  const filteredEvents = events.filter((ev) => {
+    // Filter by creator
+    if (filters.createdBy === "connections") {
+      // Check if event creator is in user's connections
+      const creatorId = ev.createdBy?._id || ev.createdBy;
+      const isConnection = connections.some(
+        (conn) => (conn._id || conn.id) === creatorId
+      );
+      if (!isConnection) return false;
+    }
+
+    // Filter by type
+    if (filters.type && ev.activityType !== filters.type) return false;
+
+    // Filter by time of day
+    if (filters.timeOfDay) {
+      const startTime = new Date(ev.startsAt);
+      const hour = startTime.getHours();
+
+      switch (filters.timeOfDay) {
+        case "morning":
+          if (hour < 6 || hour >= 12) return false;
+          break;
+        case "afternoon":
+          if (hour < 12 || hour >= 17) return false;
+          break;
+        case "evening":
+          if (hour < 17 || hour >= 21) return false;
+          break;
+        case "night":
+          if (hour < 21 && hour >= 6) return false;
+          break;
+      }
+    }
+
+    // Filter by date range
+    if (filters.dateRange) {
+      const startDate = new Date(ev.startsAt);
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      switch (filters.dateRange) {
+        case "today":
+          if (startDate.toDateString() !== today.toDateString()) return false;
+          break;
+        case "tomorrow":
+          if (startDate.toDateString() !== tomorrow.toDateString())
+            return false;
+          break;
+        case "weekend":
+          const dayOfWeek = startDate.getDay();
+          if (dayOfWeek !== 0 && dayOfWeek !== 6) return false; // 0 = Sunday, 6 = Saturday
+          break;
+        case "nextweek":
+          const nextWeek = new Date(today);
+          nextWeek.setDate(nextWeek.getDate() + 7);
+          if (startDate > nextWeek) return false;
+          break;
+      }
+    }
+
+    return true;
+  });
+
+  // Helper: is current user in event participants (or the creator)
+  const isJoined = (ev) => {
+    const myId = me?._id || me?.id;
+    if (!myId) return false;
+
+    const creatorId =
+      ev.createdBy?._id || ev.createdBy || ev.creator?._id || ev.creator?.id;
+    if (creatorId && creatorId === myId) return true;
+
+    if (Array.isArray(ev.participants)) {
+      return ev.participants.some((p) => {
+        const pid = p?._id || p?.id || p;
+        return pid === myId;
+      });
+    }
+    return false;
+  };
+
   // marker palette
   const colorForPerson = (id) => {
     if (!id) return "#2563eb";
@@ -304,49 +494,68 @@ export default function MapView() {
   // events legend + map render
   return (
     <div className="relative h-[calc(100vh-56px)] w-full">
-      {/* legend */}
-      <div className="absolute z-[1000] top-4 left-4 bg-white rounded shadow px-3 py-2 space-x-3 flex items-center">
-        <span
-          className="inline-block w-3 h-3 rounded-full"
-          style={{ background: "#ff0000ff" }}
-        ></span>
-        <span className="text-xs">You</span>
-        <span
-          className="inline-block w-3 h-3 rounded-full"
-          style={{ background: "#16a34a" }}
-        ></span>
-        <span className="text-xs">Connections</span>
-        <span
-          className="inline-block w-3 h-3 rounded-full"
-          style={{ background: "#2563eb" }}
-        ></span>
-        <span className="text-xs">Others</span>
-        {mode === "events" && (
+      {/* Legend - moved to bottom right */}
+      <div className="map-legend">
+        {mode === "people" ? (
           <>
-            <span
-              className="inline-block w-3 h-3 rounded-full"
-              style={{ background: "#f59e0b" }}
-            ></span>
-            <span className="text-xs">Events</span>
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ background: "#ff0000ff" }}
+              ></span>
+              <span className="legend-text">You</span>
+            </span>
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ background: "#16a34a" }}
+              ></span>
+              <span className="legend-text">Connections</span>
+            </span>
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ background: "#2563eb" }}
+              ></span>
+              <span className="legend-text">Others</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ background: "#f59e0b" }}
+              ></span>
+              <span className="legend-text">Events</span>
+            </span>
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ background: "#fa15f2ff" }}
+              ></span>
+              <span className="legend-text">Joined</span>
+            </span>
           </>
         )}
       </div>
 
-      {/* NEW: bottom-right locate button */}
+      {/* Locate button - styled to match */}
       <button
-        className="absolute z-[1000] bottom-4 right-4 px-3 py-2 rounded-full bg-white shadow border text-sm"
+        className="locate-button"
         onClick={relocateToUser}
-        title="Locate me"
+        title="Find my location"
       >
-        Locate me
+        <span className="locate-icon">📍</span>
+        <span>Locate me</span>
       </button>
 
       <MapContainer
-        center={[17.6868, 83.2185]}
-        zoom={14}
+        center={[12.9539456, 77.4661253]} // Bangalore center to see seeded events
+        zoom={12} // valid zoom (Leaflet max ~19)
         className="h-full w-full"
-        whenCreated={setMap} // NEW: capture map instance
       >
+        <MapController setMap={setMap} />
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
         {/* NEW: your marker (red) */}
@@ -425,15 +634,23 @@ export default function MapView() {
         {/* events mode markers or heatmap */}
         {mode === "events" &&
           !filters.heatmap &&
-          events.map((ev) => {
+          filteredEvents.map((ev) => {
             const lat = Number(ev.location?.lat);
             const lng = Number(ev.location?.lng);
             if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+            const joined = isJoined(ev);
+            // joined = pink, default = orange
+            const markerColor = joined ? "#fa15eeff" : "#f59e0b";
+
+            // Use first letter of Activity Type
+            const label = String(ev.activityType?.[0] || "E").toUpperCase();
+
             return (
               <Marker
                 key={ev._id}
                 position={[lat, lng]}
-                icon={avatarIcon("E", "#f59e0b")}
+                icon={avatarIcon(label, markerColor)}
               >
                 <Popup>
                   <div className="font-medium">{ev.name}</div>
@@ -442,24 +659,33 @@ export default function MapView() {
                     {new Date(ev.startsAt).toLocaleString()}
                   </div>
                   <div className="text-xs text-gray-500">
-                    By {ev.creator?.name || "Someone"} ·{" "}
+                    By {ev.createdBy?.name || ev.creator?.name || "Someone"} ·{" "}
                     {ev.participants?.length || 0}/{ev.capacity}
                   </div>
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      className="px-2 py-1 text-sm bg-blue-600 text-white rounded"
-                      onClick={async () => {
-                        try {
-                          await eventsApi.join(ev._id);
-                          alert("Joined");
-                        } catch (e) {
-                          alert(e?.response?.data?.message || "Join failed");
-                        }
-                      }}
-                    >
-                      Join
-                    </button>
-                  </div>
+
+                  {/* If already joined, no join button */}
+                  {!joined ? (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        className="px-2 py-1 text-sm bg-blue-600 text-white rounded"
+                        onClick={async () => {
+                          try {
+                            await eventsApi.join(ev._id);
+                            alert("Joined");
+                            // optionally refetch or update local state here
+                          } catch (e) {
+                            alert(e?.response?.data?.message || "Join failed");
+                          }
+                        }}
+                      >
+                        Join
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs font-medium text-yellow-700">
+                      ✓ You joined this event
+                    </div>
+                  )}
                 </Popup>
               </Marker>
             );
@@ -479,7 +705,7 @@ export default function MapView() {
         {/* ...existing heatmap for people if applicable... */}
       </MapContainer>
 
-      {/* Bottom sheet with mode switch, filters, create */}
+      {/* Sidebar (was BottomSheet) */}
       <BottomSheet
         mode={mode}
         setMode={setMode}
@@ -492,6 +718,8 @@ export default function MapView() {
         draft={draft}
         setDraft={setDraft}
         onCreateEvent={onCreateEvent}
+        isOpen={sidebarOpen}
+        setIsOpen={setSidebarOpen}
       />
     </div>
   );

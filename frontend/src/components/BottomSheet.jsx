@@ -4,229 +4,340 @@ export default function BottomSheet({
   mode,
   setMode,
   filters,
-  setFilters, // events filters
+  setFilters,
   peopleFilters,
-  setPeopleFilters, // NEW: people filters
+  setPeopleFilters,
   creating,
   setCreating,
   draft,
   setDraft,
   onCreateEvent,
+  isOpen,
+  setIsOpen,
 }) {
   return (
-    <div className="absolute bottom-0 left-0 right-0 z-[1000] bg-white/95 backdrop-blur border-t shadow p-3">
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          className={`px-3 py-1 rounded border ${
-            mode === "people" ? "bg-blue-600 text-white" : "bg-white"
-          }`}
-          onClick={() => setMode("people")}
-        >
-          People
-        </button>
-        <button
-          className={`px-3 py-1 rounded border ${
-            mode === "events" ? "bg-blue-600 text-white" : "bg-white"
-          }`}
-          onClick={() => setMode("events")}
-        >
-          Events
-        </button>
-      </div>
+    <>
+      {/* Menu Toggle Button */}
+      <button
+        className={`sidebar-toggle ${isOpen ? "sidebar-toggle-open" : ""}`}
+        onClick={() => setIsOpen(!isOpen)}
+        title={isOpen ? "Close menu" : "Open menu"}
+      >
+        <span className="hamburger-line"></span>
+        <span className="hamburger-line"></span>
+        <span className="hamburger-line"></span>
+      </button>
 
-      {mode === "events" ? (
-        <div className="grid md:grid-cols-2 gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="border rounded px-2 py-1"
-              value={filters.type}
-              onChange={(e) =>
-                setFilters((f) => ({ ...f, type: e.target.value }))
-              }
-            >
-              <option value="">All types</option>
-              <option>Sports</option>
-              <option>Music</option>
-              <option>Food</option>
-              <option>Tech</option>
-              <option>Travel</option>
-            </select>
-            <select
-              className="border rounded px-2 py-1"
-              value={filters.createdBy}
-              onChange={(e) =>
-                setFilters((f) => ({ ...f, createdBy: e.target.value }))
-              }
-            >
-              <option value="all">Created by: All</option>
-              <option value="connections">Created by: Connections</option>
-            </select>
-            <select
-              className="border rounded px-2 py-1"
-              value={filters.timeOfDay}
-              onChange={(e) =>
-                setFilters((f) => ({ ...f, timeOfDay: e.target.value }))
-              }
-            >
-              <option value="">Any time</option>
-              <option value="morning">Morning</option>
-              <option value="afternoon">Afternoon</option>
-              <option value="evening">Evening</option>
-              <option value="night">Night</option>
-            </select>
-            <select
-              className="border rounded px-2 py-1"
-              value={filters.dateRange}
-              onChange={(e) =>
-                setFilters((f) => ({ ...f, dateRange: e.target.value }))
-              }
-            >
-              <option value="">Any date</option>
-              <option value="today">Today</option>
-              <option value="tomorrow">Tomorrow</option>
-              <option value="weekend">Weekend</option>
-              <option value="nextweek">Next week</option>
-            </select>
-            <label className="flex items-center gap-1 text-sm ml-2">
-              <input
-                type="checkbox"
-                checked={filters.heatmap}
-                onChange={(e) =>
-                  setFilters((f) => ({ ...f, heatmap: e.target.checked }))
-                }
-              />
-              Heatmap
-            </label>
+      {/* Backdrop */}
+      {isOpen && (
+        <div className="sidebar-backdrop" onClick={() => setIsOpen(false)} />
+      )}
+
+      {/* Sidebar */}
+      <div className={`sidebar ${isOpen ? "sidebar-open" : ""}`}>
+        {/* Header */}
+        <div className="sidebar-header">
+          <h2 className="sidebar-title">
+            <span className="sidebar-title-icon">🗺️</span>
+            Map Controls
+          </h2>
+          <button
+            className="sidebar-close"
+            onClick={() => setIsOpen(false)}
+            title="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="sidebar-content">
+          {/* Mode Toggle */}
+          <div className="sidebar-section">
+            <div className="tab-buttons">
+              <button
+                className={`tab-button ${mode === "people" ? "active" : ""}`}
+                onClick={() => setMode("people")}
+              >
+                👥 People
+              </button>
+              <button
+                className={`tab-button ${mode === "events" ? "active" : ""}`}
+                onClick={() => setMode("events")}
+              >
+                🎯 Events
+              </button>
+            </div>
           </div>
 
-          <div className="justify-self-end">
-            {!creating ? (
-              <button
-                className="px-3 py-1 border rounded"
-                onClick={() => setCreating(true)}
-              >
-                + Create activity
-              </button>
-            ) : (
-              <form
-                className="grid sm:grid-cols-2 gap-2 items-end"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  onCreateEvent();
-                }}
-              >
-                <input
-                  className="border rounded px-2 py-1"
-                  placeholder="Name"
-                  value={draft.name}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, name: e.target.value }))
-                  }
-                />
+          {mode === "events" ? (
+            <div className="sidebar-section">
+              {/* Filters */}
+              <div className="filters-section">
+                <h3 className="section-label">
+                  <span className="section-icon">🔍</span>
+                  Filters
+                </h3>
+
+                <div className="filter-group">
+                  <label className="filter-label">Activity Type</label>
+                  <select
+                    className="filter-select"
+                    value={filters.type}
+                    onChange={(e) =>
+                      setFilters((f) => ({ ...f, type: e.target.value }))
+                    }
+                  >
+                    <option value="">🏷️ All types</option>
+                    <option value="Sports">⚽ Sports</option>
+                    <option value="Music">🎵 Music</option>
+                    <option value="Food">🍕 Food</option>
+                    <option value="Tech">💻 Tech</option>
+                    <option value="Travel">✈️ Travel</option>
+                  </select>
+                </div>
+
+                <div className="filter-group">
+                  <label className="filter-label">Created By</label>
+                  <select
+                    className="filter-select"
+                    value={filters.createdBy}
+                    onChange={(e) =>
+                      setFilters((f) => ({ ...f, createdBy: e.target.value }))
+                    }
+                  >
+                    <option value="all">👤 All users</option>
+                    <option value="connections">🤝 Connections</option>
+                  </select>
+                </div>
+
+                <div className="filter-group">
+                  <label className="filter-label">Time of Day</label>
+                  <select
+                    className="filter-select"
+                    value={filters.timeOfDay}
+                    onChange={(e) =>
+                      setFilters((f) => ({ ...f, timeOfDay: e.target.value }))
+                    }
+                  >
+                    <option value="">🕐 Any time</option>
+                    <option value="morning">🌅 Morning</option>
+                    <option value="afternoon">☀️ Afternoon</option>
+                    <option value="evening">🌇 Evening</option>
+                    <option value="night">🌙 Night</option>
+                  </select>
+                </div>
+
+                <div className="filter-group">
+                  <label className="filter-label">Date Range</label>
+                  <select
+                    className="filter-select"
+                    value={filters.dateRange}
+                    onChange={(e) =>
+                      setFilters((f) => ({ ...f, dateRange: e.target.value }))
+                    }
+                  >
+                    <option value="">📅 Any date</option>
+                    <option value="today">📍 Today</option>
+                    <option value="tomorrow">➡️ Tomorrow</option>
+                    <option value="weekend">🎉 Weekend</option>
+                    <option value="nextweek">📆 Next week</option>
+                  </select>
+                </div>
+
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={filters.heatmap}
+                    onChange={(e) =>
+                      setFilters((f) => ({ ...f, heatmap: e.target.checked }))
+                    }
+                  />
+                  <span className="checkbox-text">🔥 Show Heatmap</span>
+                </label>
+              </div>
+
+              {/* Create Activity */}
+              <div className="sidebar-section">
+                <h3 className="section-label">
+                  <span className="section-icon">✨</span>
+                  Create Activity
+                </h3>
+
+                {!creating ? (
+                  <button
+                    className="create-button"
+                    onClick={() => setCreating(true)}
+                  >
+                    <span className="button-icon">➕</span>
+                    New Activity
+                  </button>
+                ) : (
+                  <form
+                    className="create-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      onCreateEvent();
+                    }}
+                  >
+                    <div className="form-group">
+                      <label className="form-label">Activity Name</label>
+                      <input
+                        className="form-input"
+                        placeholder="Enter activity name"
+                        value={draft.name}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, name: e.target.value }))
+                        }
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">Type</label>
+                      <select
+                        className="form-input"
+                        value={draft.activityType}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            activityType: e.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Select type</option>
+                        <option value="Sports">Sports</option>
+                        <option value="Music">Music</option>
+                        <option value="Food">Food</option>
+                        <option value="Tech">Tech</option>
+                        <option value="Travel">Travel</option>
+                      </select>
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">Start Time</label>
+                      <input
+                        type="datetime-local"
+                        className="form-input"
+                        value={draft.startsAt}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, startsAt: e.target.value }))
+                        }
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">End Time</label>
+                      <input
+                        type="datetime-local"
+                        className="form-input"
+                        value={draft.endsAt}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, endsAt: e.target.value }))
+                        }
+                      />
+                    </div>
+
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label className="form-label">Latitude</label>
+                        <input
+                          className="form-input"
+                          placeholder="17.6868"
+                          value={draft.lat}
+                          onChange={(e) =>
+                            setDraft((d) => ({ ...d, lat: e.target.value }))
+                          }
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Longitude</label>
+                        <input
+                          className="form-input"
+                          placeholder="83.2185"
+                          value={draft.lng}
+                          onChange={(e) =>
+                            setDraft((d) => ({ ...d, lng: e.target.value }))
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="form-buttons">
+                      <button className="btn-primary" type="submit">
+                        🚀 Create
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        type="button"
+                        onClick={() => setCreating(false)}
+                      >
+                        ❌ Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="sidebar-section">
+              <h3 className="section-label">
+                <span className="section-icon">👥</span>
+                People Filters
+              </h3>
+
+              <div className="filter-group">
+                <label className="filter-label">Interest</label>
                 <select
-                  className="border rounded px-2 py-1"
-                  value={draft.activityType}
+                  className="filter-select"
+                  value={peopleFilters.activity}
                   onChange={(e) =>
-                    setDraft((d) => ({ ...d, activityType: e.target.value }))
+                    setPeopleFilters((f) => ({
+                      ...f,
+                      activity: e.target.value,
+                    }))
                   }
                 >
-                  <option value="">Type</option>
-                  <option>Sports</option>
-                  <option>Music</option>
-                  <option>Food</option>
-                  <option>Tech</option>
-                  <option>Travel</option>
+                  <option value="">🎯 All interests</option>
+                  <option value="Sports">⚽ Sports</option>
+                  <option value="Music">🎵 Music</option>
+                  <option value="Food">🍕 Food</option>
+                  <option value="Tech">💻 Tech</option>
+                  <option value="Travel">✈️ Travel</option>
                 </select>
-                <input
-                  type="datetime-local"
-                  className="border rounded px-2 py-1"
-                  value={draft.startsAt}
+              </div>
+
+              <div className="filter-group">
+                <label className="filter-label">Show</label>
+                <select
+                  className="filter-select"
+                  value={peopleFilters.show}
                   onChange={(e) =>
-                    setDraft((d) => ({ ...d, startsAt: e.target.value }))
+                    setPeopleFilters((f) => ({ ...f, show: e.target.value }))
+                  }
+                >
+                  <option value="all">👥 All people</option>
+                  <option value="online">🟢 Online only</option>
+                  <option value="connections">🤝 Connections only</option>
+                </select>
+              </div>
+
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={peopleFilters.heatmap}
+                  onChange={(e) =>
+                    setPeopleFilters((f) => ({
+                      ...f,
+                      heatmap: e.target.checked,
+                    }))
                   }
                 />
-                <input
-                  type="datetime-local"
-                  className="border rounded px-2 py-1"
-                  value={draft.endsAt}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, endsAt: e.target.value }))
-                  }
-                />
-                <input
-                  className="border rounded px-2 py-1"
-                  placeholder="Lat"
-                  value={draft.lat}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, lat: e.target.value }))
-                  }
-                />
-                <input
-                  className="border rounded px-2 py-1"
-                  placeholder="Lng"
-                  value={draft.lng}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, lng: e.target.value }))
-                  }
-                />
-                <div className="flex gap-2">
-                  <button
-                    className="px-3 py-1 bg-blue-600 text-white rounded"
-                    type="submit"
-                  >
-                    Create
-                  </button>
-                  <button
-                    className="px-3 py-1 border rounded"
-                    type="button"
-                    onClick={() => setCreating(false)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
+                <span className="checkbox-text">🔥 Show Heatmap</span>
+              </label>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            className="border rounded px-2 py-1"
-            value={peopleFilters.activity}
-            onChange={(e) =>
-              setPeopleFilters((f) => ({ ...f, activity: e.target.value }))
-            }
-          >
-            <option value="">All interests</option>
-            <option>Sports</option>
-            <option>Music</option>
-            <option>Food</option>
-            <option>Tech</option>
-            <option>Travel</option>
-          </select>
-          <select
-            className="border rounded px-2 py-1"
-            value={peopleFilters.show}
-            onChange={(e) =>
-              setPeopleFilters((f) => ({ ...f, show: e.target.value }))
-            }
-          >
-            <option value="all">All</option>
-            <option value="online">Online</option>
-            <option value="connections">Connections</option>
-          </select>
-          <label className="flex items-center gap-1 text-sm ml-2">
-            <input
-              type="checkbox"
-              checked={peopleFilters.heatmap}
-              onChange={(e) =>
-                setPeopleFilters((f) => ({ ...f, heatmap: e.target.checked }))
-              }
-            />
-            Heatmap
-          </label>
-        </div>
-      )}
-    </div>
+      </div>
+    </>
   );
 }
